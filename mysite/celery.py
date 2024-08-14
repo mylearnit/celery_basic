@@ -16,7 +16,28 @@ app.conf.beat_schedule = {
         "task": "mysite.celery.noti_beat",
         "schedule": 10.0,  # every n seconds
     },
+    # "send_notifications2": {
+    #     "task": "mysite.celery.noti_delay",
+    #     "schedule": 2.0,  # every n seconds
+    # },
 }
+from functools import wraps
+def skip_if_running(f):
+    task_name = f'{f.__module__}.{f.__name__}'
+
+    @wraps(f)
+    def wrapped(self, *args, **kwargs):
+        workers = self.app.control.inspect().active()
+        for worker, tasks in workers.items():
+            for task in tasks:
+                if (task_name == task['name'] and
+                        tuple(args) == tuple(task['args']) and
+                        kwargs == task['kwargs'] and
+                        self.request.id != task['id']):
+                    print(f'task {task_name} ({args}, {kwargs}) is running on {worker}, skipping')
+                    return None
+        return f(self, *args, **kwargs)
+    return wrapped
 
 
 def send_webhook(m="hai"):
@@ -30,22 +51,21 @@ def send_webhook(m="hai"):
         data=dumps({"text": f"{datetime.now()}: {m}"}),
     )
 
-
-@app.task
+@skip_if_running
+@app.task(queue="high_priority")
 def noti_delay():
+    import time
+    time.sleep(5)
+
     # from sampleapp.models import Notification
     # Notification.objects.create(title='celery')
     send_webhook("notification delay")
 
-
-@app.task(queue="high_priority")
+# @skip_if_running
+@app.task
 def noti_beat():
-    # from sampleapp.models import Notification
-    # Notification.objects.create(title='notification')
+    from sampleapp.models import Notification
+    Notification.objects.create(title='notification')
     send_webhook("notification beat")
 
 
-"""
-celery -A mysite worker --loglevel=info -Q high_priority
-celery -A mysite worker --loglevel=info -Q default
-"""
